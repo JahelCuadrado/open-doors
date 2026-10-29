@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "id": "opendoors",
+  "version": "${version}",
+  "name": "Open Doors",
+  "description": "Play your singleplayer world with your friends over the internet: open it to your Friends List and they join with one click. No server, no port forwarding.",
+  "authors": [
+    "Jahel Cuadrado"
+  ],
+  "contact": {
+    "homepage": "https://github.com/JahelCuadrado/open-doors",
+    "sources": "https://github.com/JahelCuadrado/open-doors",
+    "issues": "https://github.com/JahelCuadrado/open-doors/issues"
+  },
+  "license": "MIT",
+  "icon": "assets/opendoors/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.einsteinmods.opendoors.client.OpenDoorsClient"
+    ],
+    "modmenu": [
+      "com.einsteinmods.opendoors.client.config.ModMenuIntegration"
+    ]
+  },
+  "mixins": [
+    {
+      "config": "opendoors.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "recommends": {
+    "modmenu": "*"
+  }
+}

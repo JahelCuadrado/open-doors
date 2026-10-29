@@ -1,0 +1,24 @@
+{
+  // Open Doors signaling backend: one Worker plus one SQLite-backed Durable Object ("Hub").
+  // Free plan compatible. Secrets (set with `npx wrangler secret put <NAME>`, never committed):
+  //   AUTH_SECRET          random 32+ byte hex string, signs login challenges
+  // Optional, only for the relay (Cloudflare TURN needs a card on the account):
+  //   TURN_KEY_ID          Cloudflare Realtime TURN key id
+  //   TURN_KEY_API_TOKEN   API token of that TURN key
+  //   ANALYTICS_API_TOKEN  API token with "Account Analytics: Read"
+  //   ACCOUNT_ID           Cloudflare account id (for the monthly relay usage check)
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "open-doors",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-20",
+  "durable_objects": {
+    "bindings": [{ "name": "HUB", "class_name": "Hub" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Hub"] }],
+  "triggers": { "crons": ["*/15 * * * *"] },
+  "vars": {
+    "DEV_AUTH": "0",
+    "TURN_MONTHLY_CAP_BYTES": "900000000000"
+  },
+  "observability": { "enabled": false }
+}

@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "opendoors-gametest",
+  "version": "0.1.0",
+  "name": "Open Doors GameTests",
+  "environment": "*",
+  "mixins": [
+    "opendoors-gametest.mixins.json"
+  ],
+  "entrypoints": {
+    "fabric-client-gametest": [
+      "com.einsteinmods.opendoors.gametest.AccessClientGameTest",
+      "com.einsteinmods.opendoors.gametest.PeerChannelClientGameTest",
+      "com.einsteinmods.opendoors.gametest.OnlineHostingClientGameTest",
+      "com.einsteinmods.opendoors.gametest.OnlineEndToEndClientGameTest"
+    ]
+  },
+  "depends": {
+    "opendoors": "*"
+  }
+}

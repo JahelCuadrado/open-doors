@@ -1,0 +1,208 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'com.diffplug.spotless' version "${spotless_version}"
+	id 'eclipse'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	maven {
+		name = 'TerraformersMC'
+		url = 'https://maven.terraformersmc.com/releases'
+		content { includeGroup 'com.terraformersmc' }
+	}
+}
+
+loom {
+	splitEnvironmentSourceSets()
+
+	mods {
+		"opendoors" {
+			sourceSet sourceSets.main
+			sourceSet sourceSets.client
+		}
+	}
+}
+
+// The mod is client-only ("environment": "client"), so it never loads on the dedicated GameTest
+// server: its in-world tests are client GameTests (real client + integrated server).
+fabricApi {
+	configureTests {
+		createSourceSet = true
+		modId = "opendoors-gametest"
+		enableGameTests = false
+		enableClientGameTests = true
+		eula = true
+	}
+}
+
+// Client GameTests open a real game window: start it muted, small and capped at 30 FPS, so it
+// stays light while the machine is in use. The run directory is cleared before each run, so the
+// options are written right before launch.
+loom.runs.matching { it.name == "clientGameTest" }.configureEach {
+	programArgs "--width", "320", "--height", "240"
+}
+
+tasks.named("runClientGameTest") {
+	def optionsFile = file("build/run/clientGameTest/options.txt")
+	doFirst {
+		optionsFile.parentFile.mkdirs()
+		optionsFile.text = "soundCategory_master:0.0\nmaxFps:30\nrenderDistance:2\n"
+	}
+}
+
+// Dev-only end-to-end runs against a local `wrangler dev` backend (DEV_AUTH=1): two clients with
+// offline identities in their own run directories. Never used by the packaged mod.
+def devBackend = providers.gradleProperty("devBackend").getOrElse("http://127.0.0.1:8787")
+loom.runs {
+	client {
+		vmArgs "-Dopendoors.backendUrl=${devBackend}", "-Dopendoors.devAuth=true",
+				"-Dopendoors.devFriends=Bob"
+		programArgs "--username", "Alice", "--width", "480", "--height", "270"
+	}
+	clientBob {
+		client()
+		name = "Client (Bob)"
+		runDir = "run-bob"
+		vmArgs "-Dopendoors.backendUrl=${devBackend}", "-Dopendoors.devAuth=true",
+				"-Dopendoors.devFriends=Alice"
+		programArgs "--username", "Bob", "--width", "480", "--height", "270"
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Optional at runtime ("recommends" in fabric.mod.json): "Configure" button in the mod list.
+	clientCompileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
+	localRuntime "com.terraformersmc:modmenu:${project.modmenu_version}"
+
+	testImplementation sourceSets.client.output
+	testImplementation "net.fabricmc:fabric-loader-junit:${project.loader_version}"
+	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+// Dev-only end to end run (OnlineEndToEndClientGameTest): two real clients, Alice hosting and Bob
+// joining through a local `npx wrangler dev --local --var DEV_AUTH:1 ...` backend. Start both at
+// once: `./gradlew runE2eHost & ./gradlew runE2eJoiner`. Muted, tiny, 30 FPS, own run dirs.
+["host": "Alice", "joiner": "Bob"].each { role, user ->
+	def runName = "e2e${role.capitalize()}"
+	loom.runs.register(runName) {
+		inherit loom.runs.getByName("clientGameTest")
+		name = "E2E ${role}"
+		runDir = "build/run/e2e-${role}"
+		programArgs "--username", user
+		vmArgs "-Dopendoors.e2e.role=${role}",
+				"-Dopendoors.diagnostics=true",
+				"-Dopendoors.backendUrl=${devBackend}",
+				"-Dopendoors.devAuth=true",
+				"-Dopendoors.devFriends=${role == 'host' ? 'Bob,Carol' : 'Carol,Dave,Alice'}"
+	}
+	tasks.matching { it.name == "run${runName.capitalize()}" }.configureEach {
+		def optionsFile = file("build/run/e2e-${role}/options.txt")
+		doFirst {
+			optionsFile.parentFile.mkdirs()
+			optionsFile.text = "soundCategory_master:0.0\nmaxFps:30\nrenderDistance:2\n"
+		}
+	}
+}
+
+// Dev-only latency harness (src/harness): never packaged, never part of `build`. It reuses the
+// transport test fixtures (ImpairedLink, FakeTurnServer, TransportPair).
+sourceSets {
+	harness {
+		compileClasspath += sourceSets.main.output + sourceSets.test.output
+		runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+	}
+}
+
+// VS Code (Eclipse model) hides test classes from main-scope folders: mark the harness as test.
+eclipse.classpath.testSourceSets.add(sourceSets.harness)
+
+configurations {
+	harnessImplementation.extendsFrom testImplementation
+	harnessRuntimeOnly.extendsFrom testRuntimeOnly
+}
+
+tasks.register("runLatencyHarness", JavaExec) {
+	group = "verification"
+	description = "Measures round trips and burst throughput of the transport (dev only)."
+	classpath = sourceSets.harness.runtimeClasspath
+	mainClass = "com.einsteinmods.opendoors.harness.LatencyHarness"
+	args providers.gradleProperty("mode").getOrElse("direct"),
+			providers.gradleProperty("loss").getOrElse("0"),
+			providers.gradleProperty("delay").getOrElse("0"),
+			providers.gradleProperty("jitter").getOrElse("0"),
+			providers.gradleProperty("seconds").getOrElse("15")
+}
+
+processResources {
+	def version = project.version
+	def backendUrl = project.backend_url
+	inputs.property "version", version
+	inputs.property "backendUrl", backendUrl
+
+	filesMatching("fabric.mod.json") {
+		expand "version": version
+	}
+	filesMatching("opendoors-build.properties") {
+		expand "backendUrl": backendUrl
+	}
+}
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(25)
+	}
+	withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+	options.release = 25
+	options.encoding = "UTF-8"
+	// Line numbers stay for crash reports; local variable tables only serve debuggers.
+	options.debugOptions.debugLevel = "source,lines"
+	options.compilerArgs.addAll(["-Xlint:all,-processing,-classfile,-serial", "-Werror"])
+}
+
+test {
+	useJUnitPlatform()
+	// Opt-in check against a running `wrangler dev` (DEV_AUTH=1): -PdevBackendCheck
+	if (providers.gradleProperty("devBackendCheck").isPresent()) {
+		systemProperty "opendoors.devBackend", devBackend
+		outputs.upToDateWhen { false }
+	}
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+
+	from("LICENSE") {
+		rename { "${it}_$projectName" }
+	}
+	from("THIRD_PARTY_NOTICES") {
+		rename { "${it}_$projectName" }
+	}
+}
+
+spotless {
+	java {
+		target "src/*/java/**/*.java"
+		// 1.36.1: newest version compatible with Spotless 8.10.4 (1.37.0 fails with NoSuchMethodError).
+		googleJavaFormat("1.36.1")
+		removeUnusedImports()
+		trimTrailingWhitespace()
+		endWithNewline()
+	}
+}

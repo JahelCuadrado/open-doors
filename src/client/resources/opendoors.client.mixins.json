@@ -1,0 +1,21 @@
+{
+  "required": true,
+  "package": "com.einsteinmods.opendoors.client.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "FriendEntryAccess",
+    "FriendEntryMixin",
+    "FriendsButtonMixin",
+    "FriendsOverlayScreenMixin",
+    "IntegratedServerMixin",
+    "PlayerListMixin",
+    "PresenceHandlerMixin",
+    "WorldOptionsScreenMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  },
+  "overwrites": {
+    "requireAnnotations": true
+  }
+}

@@ -1,0 +1,51 @@
+# Publishes a release when a version tag (e.g. v1.0.0) is pushed: builds, runs every test, then
+# uploads the jar to Modrinth and creates the GitHub release.
+# Requires the repository variable MODRINTH_PROJECT_ID and the secret MODRINTH_TOKEN.
+name: release
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repository
+        uses: actions/checkout@v6
+      - name: validate gradle wrapper
+        uses: gradle/actions/wrapper-validation@v6
+      - name: setup jdk
+        uses: actions/setup-java@v5
+        with:
+          java-version: '25'
+          distribution: 'temurin'
+      - name: setup gradle
+        uses: gradle/actions/setup-gradle@v6
+      - name: check tag matches mod version
+        run: |
+          version="$(sed -n 's/^mod_version=//p' gradle.properties)"
+          if [ "v${version}" != "${GITHUB_REF_NAME}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match mod_version ${version}" >&2
+            exit 1
+          fi
+      - name: build and test
+        run: ./gradlew build
+      - name: publish
+        uses: Kir-Antipov/mc-publish@52307b03863581dec6b652b83e597aec02ebb075 # v3.3.1
+        with:
+          modrinth-id: ${{ vars.MODRINTH_PROJECT_ID }}
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            build/libs/!(*-sources).jar
+          version-type: release
+          changelog-file: CHANGELOG.md
+          loaders: fabric
+          game-versions: 26.3
+          java: 25
+          dependencies: |
+            fabric-api(required)
+            modmenu(optional)
