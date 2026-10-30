@@ -78,8 +78,12 @@ public final class FriendsHost implements HostCoordinator.Policy, HostCoordinato
     if (wanted == policy.mode()) {
       return;
     }
+    boolean opening = policy.mode() == OnlineMode.OFF;
     setMode(integratedServer, wanted);
     Minecraft minecraft = Minecraft.getInstance();
+    if (opening) {
+      warnIfVpn(minecraft);
+    }
     Component message =
         wanted == OnlineMode.OFF
             ? Component.translatable("opendoors.online.stopped")
@@ -88,6 +92,24 @@ public final class FriendsHost implements HostCoordinator.Policy, HostCoordinato
     minecraft.getNarrator().saySystemQueued(message);
     minecraft.updateTitle();
     minecraft.getPlayerSocialManager().getPresenceHandler().tryUpdatePresence();
+  }
+
+  /** A VPN usually makes direct connections fail: tells the host once per opening, off-thread. */
+  private static void warnIfVpn(Minecraft minecraft) {
+    Util.ioPool()
+        .execute(
+            () -> {
+              if (NetLoop.isVpnActive()) {
+                minecraft.execute(
+                    () ->
+                        minecraft
+                            .gui
+                            .hud
+                            .getChat()
+                            .addClientSystemMessage(
+                                Component.translatable("opendoors.online.vpn_warning")));
+              }
+            });
   }
 
   /** Render thread: invites a friend, first opening a closed world to invited players only. */

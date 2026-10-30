@@ -9,6 +9,9 @@ import com.einsteinmods.opendoors.core.online.OnlineMode;
 import com.einsteinmods.opendoors.host.PeerChannel;
 import com.einsteinmods.opendoors.host.PeerConnections;
 import com.mojang.blaze3d.platform.InputConstants;
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.UUID;
@@ -26,6 +29,8 @@ import net.minecraft.client.gui.screens.friends.FriendsOverlayScreen;
 import net.minecraft.client.input.MouseButtonInfo;
 import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.util.HttpUtil;
 import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -44,9 +49,16 @@ import org.slf4j.LoggerFactory;
  *       closes her world; Bob's dot goes.
  *   <li>With her world closed, Alice presses "Invite" on Bob's row: the world opens invited-only
  *       and Bob, on the title screen, gets the invite (toast, dot, "Join" and "Decline") and joins.
+ *   <li>Alice opens and closes LAN: Bob stays. Alice closes her world: Bob is kicked, his dot goes.
+ *   <li>Alice reopens invited-only without inviting Bob: nothing shows for him. She invites him
+ *       again: on his title screen "Invite" is greyed out (no world of his own), and "Decline"
+ *       takes Alice's world off his list.
  * </ol>
  *
- * Screenshots of each step are saved in the run directory's {@code screenshots} folder.
+ * <p>The two clients wait for each other's later steps through marker files in {@code
+ * build/run/e2e-sync}.
+ *
+ * <p>Screenshots of each step are saved in the run directory's {@code screenshots} folder.
  */
 public final class OnlineEndToEndClientGameTest implements FabricClientGameTest {
   private static final Logger LOGGER = LoggerFactory.getLogger("opendoors-e2e");
@@ -61,6 +73,11 @@ public final class OnlineEndToEndClientGameTest implements FabricClientGameTest 
   private static final int SETTLE_TICKS = 20 * 5;
   private static final int RETRY_TICKS = 20 * 10;
   private static final int LINGER_TICKS = 20 * 20;
+  private static final int UNINVITED_WATCH_TICKS = 20 * 15;
+  private static final Path SYNC_DIRECTORY = Path.of("..", "e2e-sync");
+  private static final String INVITED_ONLY_OPEN = "invited-only-open";
+  private static final String UNINVITED_CHECKED = "uninvited-checked";
+  private static final String DECLINED = "declined";
 
   @Override
   public void runTest(ClientGameTestContext context) {
@@ -74,6 +91,7 @@ public final class OnlineEndToEndClientGameTest implements FabricClientGameTest 
 
   private static void host(ClientGameTestContext context) {
     UUID bob = E2eFriends.offlineId(JOINER_NAME);
+    clearSignals();
     try (TestSingleplayerContext world = context.worldBuilder().create()) {
       world.getConnection().waitForChunksDownload();
       context.waitFor(minecraft -> OpenDoorsClient.online().canHost(), CONNECT_TICKS);
@@ -112,6 +130,22 @@ public final class OnlineEndToEndClientGameTest implements FabricClientGameTest 
                   "Block Bob"));
       context.waitFor(minecraft -> !joinerOnline(minecraft.getSingleplayerServer()), CONNECT_TICKS);
       LOGGER.info("E2E host: Bob blocked and kicked from Players…");
+      check(FriendsHost.get().policy().blocked().containsKey(bob), "Bob in the blocked list");
+      openFriends(context, false);
+      context.runOnClient(
+          minecraft ->
+              check(
+                  ScreenWidgets.press(minecraft.gui.screen(), "opendoors.players.button"),
+                  "Players… in the Friends List"));
+      context.waitTicks(2);
+      screenshot(context, "host-players-blocked");
+      context.runOnClient(
+          minecraft ->
+              check(
+                  ScreenWidgets.press(minecraft.gui.screen(), "opendoors.players.unblock"),
+                  "Unblock Bob"));
+      check(!FriendsHost.get().policy().blocked().containsKey(bob), "Unblock clears the block");
+      LOGGER.info("E2E host: Bob unblocked from Players…");
       openFriends(context, false);
       for (int presses = 0; FriendsHost.get().mode() != OnlineMode.OFF; presses++) {
         check(presses < OnlineMode.values().length, "My world cycles back to Closed");
@@ -141,8 +175,56 @@ public final class OnlineEndToEndClientGameTest implements FabricClientGameTest 
       screenshot(context, "host-invited-while-closed");
       LOGGER.info("E2E host: invited Bob with the world closed; it opened invited-only");
       context.waitFor(minecraft -> joinerOnline(minecraft.getSingleplayerServer()), JOIN_TICKS);
-      LOGGER.info("E2E host: Bob joined from the invite; PASS");
-      context.waitTicks(LINGER_TICKS);
+      LOGGER.info("E2E host: Bob joined from the invite");
+
+      // 4. LAN on its own: opening and closing it keeps Bob, who came through Open Doors.
+      context.waitTicks(SETTLE_TICKS);
+      world
+          .getServer()
+          .runOnServer(
+              server -> {
+                IntegratedServer integrated = (IntegratedServer) server;
+                check(
+                    integrated.publishServer(
+                        MinecraftServer.MultiplayerScope.LAN, HttpUtil.getAvailablePort()),
+                    "LAN opens while Bob plays");
+                check(integrated.unpublishServer(), "LAN closes on its own");
+              });
+      context.waitTicks(SETTLE_TICKS);
+      check(
+          context.computeOnClient(minecraft -> joinerOnline(minecraft.getSingleplayerServer())),
+          "closing LAN keeps Bob in the world");
+      LOGGER.info("E2E host: LAN opened and closed, Bob still in");
+
+      // 5. Closing the world to friends kicks Bob.
+      context.runOnClient(
+          minecraft ->
+              FriendsHost.get().changeMode(minecraft.getSingleplayerServer(), OnlineMode.OFF));
+      context.waitFor(minecraft -> !joinerOnline(minecraft.getSingleplayerServer()), CONNECT_TICKS);
+      LOGGER.info("E2E host: world closed, Bob kicked");
+
+      // 6. Invited only, Bob no longer invited: the world must not reach him.
+      context.waitTicks(RETRY_TICKS);
+      context.runOnClient(
+          minecraft -> {
+            FriendsHost.get().uninvite(bob);
+            FriendsHost.get().changeMode(minecraft.getSingleplayerServer(), OnlineMode.INVITED);
+          });
+      check(!FriendsHost.get().policy().invited().containsKey(bob), "Bob not invited");
+      signal(INVITED_ONLY_OPEN);
+      LOGGER.info("E2E host: invited only, without Bob");
+      awaitSignal(context, UNINVITED_CHECKED);
+
+      // 7. Invite again from Bob's row; Bob declines.
+      openFriends(context, false);
+      context.runOnClient(
+          minecraft ->
+              check(
+                  pressInRow(minecraft.gui.screen(), JOINER_NAME, INVITE_KEY),
+                  "Invite on Bob's row again"));
+      LOGGER.info("E2E host: invited Bob again");
+      awaitSignal(context, DECLINED);
+      LOGGER.info("E2E host: Bob declined; PASS");
       context.runOnClient(
           minecraft ->
               FriendsHost.get().changeMode(minecraft.getSingleplayerServer(), OnlineMode.OFF));
@@ -218,9 +300,85 @@ public final class OnlineEndToEndClientGameTest implements FabricClientGameTest 
         "Decline on Alice's row");
     screenshot(context, "guest-friends-invite");
     joinFromFriends(context, alice);
-    LOGGER.info("E2E joiner: joined from the invite; PASS");
+    LOGGER.info("E2E joiner: joined from the invite");
+
+    // 4-5. Alice opens and closes LAN (Bob stays), then closes her world: kicked, the dot goes.
     context.waitFor(minecraft -> minecraft.level == null, JOIN_TICKS);
     context.setScreen(TitleScreen::new);
+    context.waitFor(
+        minecraft ->
+            !OpenDoorsClient.online().directory().isJoinable(alice)
+                && !OpenDoorsClient.online().hasFriendNotification(),
+        CONNECT_TICKS);
+    screenshot(context, "guest-title-closed");
+    LOGGER.info("E2E joiner: Alice closed her world, the dot went");
+
+    // 6. Invited only without an invite for Bob: nothing reaches him.
+    awaitSignal(context, INVITED_ONLY_OPEN);
+    for (int tick = 0; tick < UNINVITED_WATCH_TICKS; tick++) {
+      check(
+          context.computeOnClient(
+              minecraft ->
+                  !OpenDoorsClient.online().directory().isJoinable(alice)
+                      && !OpenDoorsClient.online().directory().hasInvite(alice)),
+          "an invited-only world must not reach an uninvited friend");
+      context.waitTick();
+    }
+    signal(UNINVITED_CHECKED);
+    LOGGER.info("E2E joiner: invited-only world stayed hidden");
+
+    // 7. The new invite: Invite is greyed out on the title screen; Decline hides Alice's world.
+    context.waitFor(minecraft -> OpenDoorsClient.online().directory().hasInvite(alice), JOIN_TICKS);
+    openFriends(context, true);
+    check(
+        context.computeOnClient(
+            minecraft -> {
+              Button invite = rowButton(minecraft.gui.screen(), HOST_NAME, INVITE_KEY);
+              return invite != null && !invite.active;
+            }),
+        "Invite greyed out without a world to share");
+    screenshot(context, "guest-friends-invite-again");
+    context.runOnClient(
+        minecraft ->
+            check(
+                pressInRow(minecraft.gui.screen(), HOST_NAME, DECLINE_KEY),
+                "Decline on Alice's row"));
+    context.waitTicks(2);
+    check(
+        context.computeOnClient(
+            minecraft ->
+                !OpenDoorsClient.online().directory().isJoinable(alice)
+                    && !OpenDoorsClient.online().directory().hasInvite(alice)
+                    && rowButton(minecraft.gui.screen(), HOST_NAME, JOIN_KEY) == null),
+        "Decline takes Alice's world off the list");
+    screenshot(context, "guest-friends-declined");
+    signal(DECLINED);
+    LOGGER.info("E2E joiner: declined Alice's invite; PASS");
+    context.setScreen(TitleScreen::new);
+  }
+
+  private static void clearSignals() {
+    for (String step : List.of(INVITED_ONLY_OPEN, UNINVITED_CHECKED, DECLINED)) {
+      try {
+        Files.deleteIfExists(SYNC_DIRECTORY.resolve(step));
+      } catch (IOException exception) {
+        throw new UncheckedIOException(exception);
+      }
+    }
+  }
+
+  /** Tells the other client that {@code step} is done. */
+  private static void signal(String step) {
+    try {
+      Files.createDirectories(SYNC_DIRECTORY);
+      Files.writeString(SYNC_DIRECTORY.resolve(step), step);
+    } catch (IOException exception) {
+      throw new UncheckedIOException(exception);
+    }
+  }
+
+  private static void awaitSignal(ClientGameTestContext context, String step) {
+    context.waitFor(minecraft -> Files.exists(SYNC_DIRECTORY.resolve(step)), JOIN_TICKS);
   }
 
   /** Presses Join on Alice's row, pressing again if an attempt fails while her side settles. */

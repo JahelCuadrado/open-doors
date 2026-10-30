@@ -627,6 +627,32 @@ public final class NetLoop implements AutoCloseable {
   }
 
   /**
+   * Whether a VPN-like interface is up with a usable address (IPv4 or global IPv6). macOS keeps
+   * system tunnels (utun0-3) up with link-local addresses only; those do not count. Enumerates the
+   * interfaces (milliseconds on Windows): call it off the render thread.
+   */
+  public static boolean isVpnActive() {
+    try {
+      for (NetworkInterface network : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+        if (!network.isUp()
+            || network.isLoopback()
+            || !isVpnLike(network.getName(), network.getDisplayName())) {
+          continue;
+        }
+        for (InetAddress address : Collections.list(network.getInetAddresses())) {
+          if (address instanceof Inet4Address && !address.isLinkLocalAddress()
+              || address instanceof Inet6Address && isGlobalIpv6(address)) {
+            return true;
+          }
+        }
+      }
+    } catch (SocketException exception) {
+      return false;
+    }
+    return false;
+  }
+
+  /**
    * Tunnel interfaces of common VPN clients: macOS/Linux names (utun, ipsec, wg, tun, tap, ppp) or
    * a Windows adapter description naming a VPN, TAP, WireGuard or tunnel adapter.
    */

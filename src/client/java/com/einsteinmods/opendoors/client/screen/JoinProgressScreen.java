@@ -1,6 +1,7 @@
 package com.einsteinmods.opendoors.client.screen;
 
 import com.einsteinmods.opendoors.client.OpenDoorsClient;
+import com.einsteinmods.opendoors.core.net.NetLoop;
 import com.einsteinmods.opendoors.core.online.JoinAttempt;
 import java.util.List;
 import java.util.UUID;
@@ -133,7 +134,12 @@ public final class JoinProgressScreen extends net.minecraft.client.gui.screens.S
           case BLOCKED -> Component.translatable("opendoors.join.failed.blocked");
           case FULL -> Component.translatable("opendoors.join.failed.full", hostName);
           case BUSY -> Component.translatable("opendoors.join.failed.busy", hostName);
-          case UNREACHABLE -> Component.translatable("opendoors.join.failed.unreachable", hostName);
+          case UNREACHABLE ->
+              Component.translatable(
+                  NetLoop.isVpnActive()
+                      ? "opendoors.join.failed.unreachable.vpn"
+                      : "opendoors.join.failed.unreachable",
+                  hostName);
           case MONTHLY_LIMIT -> Component.translatable("opendoors.join.failed.monthly_limit");
           case TIMED_OUT -> Component.translatable("opendoors.join.failed.timed_out", hostName);
           case OFFLINE -> Component.translatable("opendoors.join.failed.offline");
